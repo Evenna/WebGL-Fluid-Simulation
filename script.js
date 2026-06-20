@@ -608,14 +608,8 @@ const displayShaderSource = `
         c += bloom;
     #endif
 
-        // ── webcam background: mirror-x + Y-flip in shader ─
-        if (uWebcamMix > 0.0) {
-            vec2 camUv = vec2(1.0 - vUv.x, 1.0 - vUv.y);
-            vec3 cam = texture2D(uWebcam, camUv).rgb;
-            float fluidLum = dot(c, vec3(0.299, 0.587, 0.114));
-            float blend = clamp(fluidLum * 4.0, 0.0, 1.0);
-            c = mix(cam, c + cam * 0.2, blend);
-        }
+        // ── webcam background: display pure dye (which IS the webcam, distorted) ─
+        // No overlay — webcam pixels are injected into dye each frame via _webcamUpdateDye
 
         float a = max(c.r, max(c.g, c.b));
         gl_FragColor = vec4(c, a);
@@ -1586,6 +1580,18 @@ window._fluidBlit            = blit;
 window._fluidSplatProgram    = () => splatProgram;
 window._fluidVelocity        = () => velocity;
 window._fluidCorrectRadius   = correctRadius;
+
+// ── velocity-only splat (no dye color injected) ──
+window._splatVelocityOnly = function (x, y, dx, dy) {
+    splatProgram.bind();
+    gl.uniform1i(splatProgram.uniforms.uTarget, velocity.read.attach(0));
+    gl.uniform1f(splatProgram.uniforms.aspectRatio, canvas.width / canvas.height);
+    gl.uniform2f(splatProgram.uniforms.point, x, y);
+    gl.uniform3f(splatProgram.uniforms.color, dx, dy, 0.0);
+    gl.uniform1f(splatProgram.uniforms.radius, correctRadius(config.SPLAT_RADIUS / 100.0));
+    blit(velocity.write);
+    velocity.swap();
+};
 
 function correctDeltaX (delta) {
     let aspectRatio = canvas.width / canvas.height;

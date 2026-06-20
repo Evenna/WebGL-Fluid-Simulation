@@ -91,9 +91,9 @@
       cameraActive = true;
       statusEl.textContent  = '✋ 手势识别中 (点击关闭)';
       statusEl.style.borderColor = 'rgba(48,209,88,0.7)';
-      // ── 新增：初始化 webcam texture + 注册每帧上传钩子 ──
+      // ── 初始化 webcam → dye 注入钩子 ──
       initWebcamTexture();
-      window._webcamUpdateDye = uploadWebcamTexture;
+      window._webcamUpdateDye = injectWebcamIntoDye;
       await initMediaPipe();
     } catch (e) {
       console.error('[HandFluid]', e);
@@ -113,7 +113,6 @@
     cameraActive = false;
     statusEl.textContent       = '📷 启用手势控制';
     statusEl.style.borderColor = 'rgba(255,255,255,0.18)';
-    // ── 新增：清理 webcam texture ──
     window._webcamTexture   = null;
     window._webcamUpdateDye = null;
     // Release all hand pointers
@@ -121,7 +120,10 @@
     overlayCtx.clearRect(0, 0, 640, 480);
   }
 
-  // ─── Webcam texture（新增，不影响 pointer 逻辑）────────────────────────────
+  // ─── Webcam → dye 注入 ────────────────────────────────────────────────────
+  // 每帧把 webcam 像素上传为 GL texture，然后用 copyProgram blit 进 dye buffer
+  // 流体引擎用 velocity 场扭曲 dye —— 效果就是摄像头画面本身被搅动
+
   function initWebcamTexture () {
     const gl = window._fluidGL;
     if (!gl) return;
@@ -134,13 +136,35 @@
     window._webcamTexture = webcamTex;
   }
 
-  function uploadWebcamTexture () {
+  function injectWebcamIntoDye () {
     if (!cameraActive || !webcamTex || videoEl.readyState < 2) return;
-    const gl = window._fluidGL;
-    if (!gl) return;
+    const gl  = window._fluidGL;
+    const dye = window._fluidDye && window._fluidDye();
+    if (!gl || !dye) return;
+
+    // 1. 把 video 帧上传到 webcamTex（镜像 + Y-flip 用 sampleCanvas）
+    if (!sampleCanvas) return;
+    const sw = dye.width, sh = dye.height;
+    sampleCanvas.width  = sw;
+    sampleCanvas.height = sh;
+    sampleCtx.save();
+    sampleCtx.translate(sw, 0);
+    sampleCtx.scale(-1, 1);
+    sampleCtx.drawImage(videoEl, 0, 0, sw, sh);
+    sampleCtx.restore();
+
     gl.bindTexture(gl.TEXTURE_2D, webcamTex);
-    // Y-flip handled in display shader (1.0 - vUv.y), no UNPACK_FLIP_Y needed
-    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGB, gl.RGB, gl.UNSIGNED_BYTE, videoEl);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGB, gl.RGB, gl.UNSIGNED_BYTE, sampleCanvas);
+
+    // 2. 把 webcamTex blit 进 dye.write，再 swap
+    const blit = window._fluidBlit;
+    if (!blit) return;
+    gl.disable(gl.BLEND);
+    // 用内置 copyProgram 思路：直接绑定 framebuffer 画一个全屏三角
+    // 但 copyProgram 未暴露，改用 texImage2D 直接写 dye FBO 的 texture
+    // 方案：把 sampleCanvas 直接写入 dye.read.texture
+    gl.bindTexture(gl.TEXTURE_2D, dye.read.texture);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, sampleCanvas);
   }
 
   // ── 从摄像头像素采样颜色（新增）────────────────────────────────────────────
@@ -288,33 +312,41 @@
     return extended;
   }
 
-  // ─── Fluid pointer injection ── v1 原版，一字不改 ────────────────────────────
+  // ─── Fluid pointer injection ── 只推 velocity，不注入颜色 ──────────────────
   function injectIntoFluid () {
-    if (!window.fluidCanvas || !window.updatePointerDownData) return;
-    const fc  = window.fluidCanvas;
-    const pts = window.pointers;
+    if (!window.fluidCanvas || !window._splatVelocityOnly) return;
+    const fc = window.fluidCanvas;
 
     Object.values(fingerState).forEach(fs => {
       if (!fs.active) return;
 
-      const posX = fs.x * fc.width;
-      const posY = fs.y * fc.height;
-      let   ptr  = pts.find(p => p.id === fs.id);
+      const x = fs.x;
+      const y = fs.y;
 
       if (fs.fresh) {
+        // 第一帧：注册 pointer（为了让 applyInputs 不报错），但不传颜色
+        const pts = window.pointers;
+        let ptr = pts && pts.find(p => p.id === fs.id);
         if (!ptr) {
           ptr = new window.pointerPrototype();
           pts.push(ptr);
         }
-        window.updatePointerDownData(ptr, fs.id, posX, posY);
-        ptr.color = fs.color;
+        window.updatePointerDownData(ptr, fs.id, x * fc.width, y * fc.height);
+        // 颜色设成透明黑，让 dye splat 不影响画面
+        ptr.color = { r: 0, g: 0, b: 0 };
       } else {
-        if (!ptr) return;
-        const dx = Math.abs(fs.x - fs.prevX);
-        const dy = Math.abs(fs.y - fs.prevY);
-        if (dx > MIN_MOVE || dy > MIN_MOVE) {
-          window.updatePointerMoveData(ptr, posX, posY);
-          ptr.color = fs.color;   // 新增：更新颜色
+        const dx = fs.x - fs.prevX;
+        const dy = fs.y - fs.prevY;
+        if (Math.abs(dx) > MIN_MOVE || Math.abs(dy) > MIN_MOVE) {
+          // 只推 velocity，不写 dye
+          window._splatVelocityOnly(x, y, dx * 5000, -dy * 5000);
+          // 同步更新 pointer（防止 applyInputs 走默认 splat）
+          const pts = window.pointers;
+          const ptr = pts && pts.find(p => p.id === fs.id);
+          if (ptr) {
+            window.updatePointerMoveData(ptr, x * fc.width, y * fc.height);
+            ptr.color = { r: 0, g: 0, b: 0 };
+          }
         }
       }
     });
