@@ -608,7 +608,7 @@ const displayShaderSource = `
         c += bloom;
     #endif
 
-        // ── webcam background: mirror-x + flip-y for correct orientation ─
+        // ── webcam background: mirror-x + Y-flip in shader ─
         if (uWebcamMix > 0.0) {
             vec2 camUv = vec2(1.0 - vUv.x, 1.0 - vUv.y);
             vec3 cam = texture2D(uWebcam, camUv).rgb;
