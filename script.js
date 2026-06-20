@@ -60,13 +60,13 @@ let config = {
     SIM_RESOLUTION: 128,
     DYE_RESOLUTION: 1024,
     CAPTURE_RESOLUTION: 512,
-    DENSITY_DISSIPATION: 0.97,
-    VELOCITY_DISSIPATION: 0.1,
+    DENSITY_DISSIPATION: 1,
+    VELOCITY_DISSIPATION: 0.2,
     PRESSURE: 0.8,
     PRESSURE_ITERATIONS: 20,
-    CURL: 40,
-    SPLAT_RADIUS: 0.35,
-    SPLAT_FORCE: 8000,
+    CURL: 30,
+    SPLAT_RADIUS: 0.25,
+    SPLAT_FORCE: 6000,
     SHADING: true,
     COLORFUL: true,
     COLOR_UPDATE_SPEED: 10,
@@ -1550,14 +1550,6 @@ function updatePointerUpData (pointer) {
     pointer.down = false;
 }
 
-// ── Expose internals for hand-fluid.js ──────────────────────────────────────
-window.updatePointerDownData = updatePointerDownData;
-window.updatePointerMoveData = updatePointerMoveData;
-window.updatePointerUpData   = updatePointerUpData;
-window.pointerPrototype      = pointerPrototype;
-window.pointers              = pointers;
-window.fluidCanvas           = canvas;
-
 function correctDeltaX (delta) {
     let aspectRatio = canvas.width / canvas.height;
     if (aspectRatio < 1) delta *= aspectRatio;
@@ -1652,13 +1644,11 @@ function hashCode (s) {
     }
     return hash;
 };
+
 // ── Expose internals for hand-fluid.js ──────────────────────────────────────
+window.pointers              = pointers;
+window.fluidCanvas           = canvas;
+window.pointerPrototype      = pointerPrototype;
 window.updatePointerDownData = updatePointerDownData;
 window.updatePointerMoveData = updatePointerMoveData;
 window.updatePointerUpData   = updatePointerUpData;
-window.pointerPrototype      = pointerPrototype;
-window.pointers              = pointers;
-window.fluidCanvas           = canvas;
-window._fluidGL              = gl;
-window._fluidVelocity        = () => velocity;
-window._fluidBlit            = blit;
