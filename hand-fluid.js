@@ -10,7 +10,7 @@
   const SMOOTHING    = 0.45;
   const MIN_MOVE     = 0.002;
   const PTR_ID_BASE  = 100;
-  const COLOR_BOOST  = 10.0;   // webcam pixel → fluid color multiplier
+  const COLOR_BOOST  = 2.5;    // webcam pixel → fluid color multiplier
 
   // ─── State ───────────────────────────────────────────────────────────────────
   const fingerState = {};
@@ -157,7 +157,22 @@
         Math.max(0, Math.min(sh - 1, Math.round(fy * sh))),
         1, 1
       ).data;
-      return { r: (d[0] / 255) * COLOR_BOOST, g: (d[1] / 255) * COLOR_BOOST, b: (d[2] / 255) * COLOR_BOOST };
+      const r = d[0] / 255, g = d[1] / 255, b = d[2] / 255;
+      // 背景亮度：亮背景用暗色，暗背景用亮色
+      const lum = 0.299 * r + 0.587 * g + 0.114 * b;
+      let fr, fg, fb;
+      if (lum > 0.5) {
+        // 亮背景 → 用暗色调（颜色值低，对比清晰）
+        fr = r * 0.8;
+        fg = g * 0.8;
+        fb = b * 0.8;
+      } else {
+        // 暗背景 → 用亮色调（颜色值高，发光感）
+        fr = Math.max(r, 0.15) * COLOR_BOOST;
+        fg = Math.max(g, 0.15) * COLOR_BOOST;
+        fb = Math.max(b, 0.15) * COLOR_BOOST;
+      }
+      return { r: fr, g: fg, b: fb };
     } catch (_) { return null; }
   }
 
@@ -320,11 +335,11 @@
   // ─── Drawing ── v1 原版 ──────────────────────────────────────────────────────
   const OVERLAY_COLORS = ['#FF6B6B', '#FFD93D', '#6BCB77', '#4D96FF', '#C77DFF'];
   const FLUID_COLORS   = [
-    { r: 3.0, g: 0.4, b: 0.4 },
-    { r: 2.8, g: 2.8, b: 0.2 },
-    { r: 0.2, g: 3.0, b: 0.6 },
-    { r: 0.2, g: 1.0, b: 3.5 },
-    { r: 2.5, g: 0.2, b: 3.5 },
+    { r: 0.9, g: 0.15, b: 0.15 },
+    { r: 0.85, g: 0.75, b: 0.05 },
+    { r: 0.05, g: 0.9, b: 0.25 },
+    { r: 0.05, g: 0.35, b: 1.0 },
+    { r: 0.75, g: 0.05, b: 1.0 },
   ];
 
   const CONNECTIONS = [
