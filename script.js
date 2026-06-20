@@ -608,15 +608,13 @@ const displayShaderSource = `
         c += bloom;
     #endif
 
-        // ── webcam background: mirror x for selfie view ──────────────────
+        // ── webcam background: mirror-x + flip-y for correct orientation ─
         if (uWebcamMix > 0.0) {
-            vec2 camUv = vec2(1.0 - vUv.x, vUv.y);
+            vec2 camUv = vec2(1.0 - vUv.x, 1.0 - vUv.y);
             vec3 cam = texture2D(uWebcam, camUv).rgb;
-            // fluid brightness drives blend: bright fluid = fluid color, dark = webcam
             float fluidLum = dot(c, vec3(0.299, 0.587, 0.114));
-            float blend = clamp(fluidLum * 6.0, 0.0, 1.0);
-            c = mix(cam, c + cam * 0.15, blend) * uWebcamMix
-              + c * (1.0 - uWebcamMix);
+            float blend = clamp(fluidLum * 4.0, 0.0, 1.0);
+            c = mix(cam, c + cam * 0.2, blend);
         }
 
         float a = max(c.r, max(c.g, c.b));
