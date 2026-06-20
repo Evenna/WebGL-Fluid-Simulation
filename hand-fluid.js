@@ -121,8 +121,8 @@
   }
 
   // ─── Webcam → dye 注入 ────────────────────────────────────────────────────
-  // 每帧把 webcam 像素上传为 GL texture，然后用 copyProgram blit 进 dye buffer
-  // 流体引擎用 velocity 场扭曲 dye —— 效果就是摄像头画面本身被搅动
+  // 每帧把 webcam 画面用 copyProgram blit 进 dye buffer
+  // 手势只产生 velocity 扰动，流体引擎用 velocity 扭曲 dye（即摄像头画面）
 
   function initWebcamTexture () {
     const gl = window._fluidGL;
@@ -140,31 +140,39 @@
     if (!cameraActive || !webcamTex || videoEl.readyState < 2) return;
     const gl  = window._fluidGL;
     const dye = window._fluidDye && window._fluidDye();
-    if (!gl || !dye) return;
+    const cp  = window._fluidCopyProgram && window._fluidCopyProgram();
+    const blit = window._fluidBlit;
+    if (!gl || !dye || !cp || !blit) return;
 
-    // 1. 把 video 帧上传到 webcamTex（镜像 + Y-flip 用 sampleCanvas）
-    if (!sampleCanvas) return;
-    const sw = dye.width, sh = dye.height;
-    sampleCanvas.width  = sw;
-    sampleCanvas.height = sh;
+    // 1. 把 video 帧画到 offscreen canvas，做镜像X + 翻转Y
+    //    注意：sampleCanvas 尺寸固定 128×96，不要每帧改 width/height（改了会清空）
+    const sw = sampleCanvas.width;
+    const sh = sampleCanvas.height;
     sampleCtx.save();
+    // 先上下翻转
+    sampleCtx.translate(0, sh);
+    sampleCtx.scale(1, -1);
+    // 再左右镜像
     sampleCtx.translate(sw, 0);
     sampleCtx.scale(-1, 1);
     sampleCtx.drawImage(videoEl, 0, 0, sw, sh);
     sampleCtx.restore();
 
+    // 2. 上传 canvas 到 webcamTex（UNSIGNED_BYTE RGB，独立 texture）
     gl.bindTexture(gl.TEXTURE_2D, webcamTex);
+    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false); // 已在canvas里翻了
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGB, gl.RGB, gl.UNSIGNED_BYTE, sampleCanvas);
 
-    // 2. 把 webcamTex blit 进 dye.write，再 swap
-    const blit = window._fluidBlit;
-    if (!blit) return;
+    // 3. 用 copyProgram 把 webcamTex blit 进 dye.write（FBO，HALF_FLOAT格式）
+    //    copyShader 原样采样，不做额外变换
     gl.disable(gl.BLEND);
-    // 用内置 copyProgram 思路：直接绑定 framebuffer 画一个全屏三角
-    // 但 copyProgram 未暴露，改用 texImage2D 直接写 dye FBO 的 texture
-    // 方案：把 sampleCanvas 直接写入 dye.read.texture
-    gl.bindTexture(gl.TEXTURE_2D, dye.read.texture);
-    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, sampleCanvas);
+    cp.bind();
+    // attach webcamTex 到 slot 0
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, webcamTex);
+    gl.uniform1i(cp.uniforms.uTexture, 0);
+    blit(dye.write);
+    dye.swap();
   }
 
   // ── 从摄像头像素采样颜色（新增）────────────────────────────────────────────
@@ -264,15 +272,12 @@
           drawFingertipDot(tip, fingerIdx);
 
           if (!fingerState[key]) {
-            // 新增：尝试从摄像头采样颜色
-            const camColor = sampleWebcamColor(fx, fy);
             fingerState[key] = {
               id:      PTR_ID_BASE + handIdx * 5 + fingerIdx,
               x:  fx, y:  fy,
               prevX: fx, prevY: fy,
               active: true,
               fresh:  true,
-              color:  camColor || FLUID_COLORS[fingerIdx % 5],
             };
           } else {
             const s  = fingerState[key];
@@ -282,9 +287,6 @@
             s.y      = s.y * SMOOTHING + fy * (1 - SMOOTHING);
             s.active = true;
             s.fresh  = false;
-            // 新增：持续更新颜色
-            const camColor = sampleWebcamColor(fx, fy);
-            if (camColor) s.color = camColor;
           }
         });
       });

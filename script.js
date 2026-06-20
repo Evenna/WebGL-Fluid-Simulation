@@ -1593,6 +1593,9 @@ window._splatVelocityOnly = function (x, y, dx, dy) {
     velocity.swap();
 };
 
+// ── expose copyProgram for webcam→dye blit ──
+window._fluidCopyProgram = () => copyProgram;
+
 function correctDeltaX (delta) {
     let aspectRatio = canvas.width / canvas.height;
     if (aspectRatio < 1) delta *= aspectRatio;
