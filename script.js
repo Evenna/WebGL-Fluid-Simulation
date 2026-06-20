@@ -561,8 +561,6 @@ const displayShaderSource = `
     uniform sampler2D uDithering;
     uniform vec2 ditherScale;
     uniform vec2 texelSize;
-    uniform sampler2D uWebcam;
-    uniform float uWebcamMix;
 
     vec3 linearToGamma (vec3 color) {
         color = max(color, vec3(0));
@@ -607,9 +605,6 @@ const displayShaderSource = `
         bloom = linearToGamma(bloom);
         c += bloom;
     #endif
-
-        // ── webcam background: display pure dye (which IS the webcam, distorted) ─
-        // No overlay — webcam pixels are injected into dye each frame via _webcamUpdateDye
 
         float a = max(c.r, max(c.g, c.b));
         gl_FragColor = vec4(c, a);
@@ -1186,8 +1181,6 @@ function update () {
     applyInputs();
     if (!config.PAUSED)
         step(dt);
-    // ── webcam dye injection hook ──
-    if (window._webcamUpdateDye) window._webcamUpdateDye();
     render(null);
     requestAnimationFrame(update);
 }
@@ -1351,16 +1344,6 @@ function drawDisplay (target) {
     }
     if (config.SUNRAYS)
         gl.uniform1i(displayMaterial.uniforms.uSunrays, sunrays.attach(3));
-    // ── webcam background ──
-    if (window._webcamTexture) {
-        const slot = 4;
-        gl.activeTexture(gl.TEXTURE0 + slot);
-        gl.bindTexture(gl.TEXTURE_2D, window._webcamTexture);
-        gl.uniform1i(displayMaterial.uniforms.uWebcam, slot);
-        gl.uniform1f(displayMaterial.uniforms.uWebcamMix, 1.0);
-    } else {
-        gl.uniform1f(displayMaterial.uniforms.uWebcamMix, 0.0);
-    }
     blit(target);
 }
 
@@ -1574,27 +1557,6 @@ window.updatePointerUpData   = updatePointerUpData;
 window.pointerPrototype      = pointerPrototype;
 window.pointers              = pointers;
 window.fluidCanvas           = canvas;
-window._fluidGL              = gl;
-window._fluidDye             = () => dye;
-window._fluidBlit            = blit;
-window._fluidSplatProgram    = () => splatProgram;
-window._fluidVelocity        = () => velocity;
-window._fluidCorrectRadius   = correctRadius;
-
-// ── velocity-only splat (no dye color injected) ──
-window._splatVelocityOnly = function (x, y, dx, dy) {
-    splatProgram.bind();
-    gl.uniform1i(splatProgram.uniforms.uTarget, velocity.read.attach(0));
-    gl.uniform1f(splatProgram.uniforms.aspectRatio, canvas.width / canvas.height);
-    gl.uniform2f(splatProgram.uniforms.point, x, y);
-    gl.uniform3f(splatProgram.uniforms.color, dx, dy, 0.0);
-    gl.uniform1f(splatProgram.uniforms.radius, correctRadius(config.SPLAT_RADIUS / 100.0));
-    blit(velocity.write);
-    velocity.swap();
-};
-
-// ── expose copyProgram for webcam→dye blit ──
-window._fluidCopyProgram = () => copyProgram;
 
 function correctDeltaX (delta) {
     let aspectRatio = canvas.width / canvas.height;
@@ -1690,3 +1652,13 @@ function hashCode (s) {
     }
     return hash;
 };
+// ── Expose internals for hand-fluid.js ──────────────────────────────────────
+window.updatePointerDownData = updatePointerDownData;
+window.updatePointerMoveData = updatePointerMoveData;
+window.updatePointerUpData   = updatePointerUpData;
+window.pointerPrototype      = pointerPrototype;
+window.pointers              = pointers;
+window.fluidCanvas           = canvas;
+window._fluidGL              = gl;
+window._fluidVelocity        = () => velocity;
+window._fluidBlit            = blit;
