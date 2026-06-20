@@ -1652,3 +1652,11 @@ function hashCode (s) {
     }
     return hash;
 };
+
+// ── Expose internals for hand-fluid.js ──────────────────────────────────────
+window.updatePointerDownData = updatePointerDownData;
+window.updatePointerMoveData = updatePointerMoveData;
+window.updatePointerUpData   = updatePointerUpData;
+window.pointerPrototype      = pointerPrototype;
+window.pointers              = pointers;
+window.fluidCanvas           = canvas;
