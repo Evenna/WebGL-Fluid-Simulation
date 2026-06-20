@@ -1,26 +1,33 @@
 /**
- * Hand Gesture → WebGL Fluid Control
- * Uses MediaPipe Hands to track fingertips and drive fluid splats
- * Each extended fingertip becomes an independent fluid pointer
+ * Hand Gesture → WebGL Fluid Control  +  Webcam-as-Background
+ *
+ * Two features in one module:
+ * 1. MediaPipe Hands: each extended fingertip → independent fluid pointer
+ * 2. Webcam texture: camera feed is uploaded to WebGL every frame as the
+ *    fluid background; splat colors are sampled from the live video pixels
  */
 
 (function () {
   // ─── Config ─────────────────────────────────────────────────────────────────
-  const FINGER_TIPS  = [4, 8, 12, 16, 20];   // thumb, index, middle, ring, pinky
-  const SMOOTHING    = 0.45;   // position lerp (0=raw, higher=smoother but laggy)
-  const MIN_MOVE     = 0.002;  // minimum normalised movement to emit splat
-  const PTR_ID_BASE  = 100;    // offset so hand pointers don't clash with mouse
+  const FINGER_TIPS  = [4, 8, 12, 16, 20];
+  const SMOOTHING    = 0.45;
+  const MIN_MOVE     = 0.002;
+  const PTR_ID_BASE  = 100;
 
   // ─── State ───────────────────────────────────────────────────────────────────
-  // key = "handIdx_fingerIdx"  →  { id, x, y, prevX, prevY, active, color }
   const fingerState = {};
   let videoEl       = null;
   let overlayCanvas = null;
   let overlayCtx    = null;
+  // 2D canvas used to read pixel colors from video
+  let sampleCanvas  = null;
+  let sampleCtx     = null;
   let handsModel    = null;
   let mpCamera      = null;
   let cameraActive  = false;
   let statusEl      = null;
+  // WebGL texture handle (written to window._webcamTexture for script.js)
+  let webcamTex     = null;
 
   // ─── UI ─────────────────────────────────────────────────────────────────────
   function buildUI () {
@@ -37,7 +44,7 @@
     statusEl.addEventListener('click', toggleCamera);
     document.body.appendChild(statusEl);
 
-    // Small mirrored video preview
+    // Small mirrored video preview (bottom-left)
     videoEl = document.createElement('video');
     videoEl.autoplay = true;
     videoEl.playsInline = true;
@@ -51,7 +58,7 @@
     });
     document.body.appendChild(videoEl);
 
-    // Overlay canvas for skeleton — same position, same size as preview
+    // Skeleton overlay canvas (same position as video preview)
     overlayCanvas = document.createElement('canvas');
     overlayCanvas.width  = 640;
     overlayCanvas.height = 480;
@@ -62,6 +69,12 @@
     });
     overlayCtx = overlayCanvas.getContext('2d');
     document.body.appendChild(overlayCanvas);
+
+    // Offscreen 2D canvas for pixel sampling (small, 128×96 is plenty)
+    sampleCanvas = document.createElement('canvas');
+    sampleCanvas.width  = 128;
+    sampleCanvas.height = 96;
+    sampleCtx = sampleCanvas.getContext('2d', { willReadFrequently: true });
   }
 
   // ─── Camera toggle ───────────────────────────────────────────────────────────
@@ -77,11 +90,17 @@
       });
       videoEl.srcObject = stream;
       await new Promise(r => { videoEl.onloadedmetadata = r; });
-      videoEl.style.display    = 'block';
+      videoEl.style.display       = 'block';
       overlayCanvas.style.display = 'block';
       cameraActive = true;
-      statusEl.textContent  = '✋ 手势识别中 (点击关闭)';
+      statusEl.textContent       = '✋ 手势识别中 (点击关闭)';
       statusEl.style.borderColor = 'rgba(48,209,88,0.7)';
+
+      // Create WebGL texture for webcam feed
+      initWebcamTexture();
+      // Register per-frame upload hook into fluid's update() loop
+      window._webcamUpdateDye = uploadWebcamTexture;
+
       await initMediaPipe();
     } catch (e) {
       console.error('[HandFluid]', e);
@@ -90,8 +109,8 @@
   }
 
   function stopCamera () {
-    if (mpCamera) { try { mpCamera.stop(); } catch(_) {} mpCamera = null; }
-    if (handsModel) { try { handsModel.close(); } catch(_) {} handsModel = null; }
+    if (mpCamera)    { try { mpCamera.stop();   } catch (_) {} mpCamera    = null; }
+    if (handsModel)  { try { handsModel.close(); } catch (_) {} handsModel  = null; }
     if (videoEl.srcObject) {
       videoEl.srcObject.getTracks().forEach(t => t.stop());
       videoEl.srcObject = null;
@@ -101,14 +120,67 @@
     cameraActive = false;
     statusEl.textContent       = '📷 启用手势控制';
     statusEl.style.borderColor = 'rgba(255,255,255,0.18)';
-    // Release all hand pointers
+    // Stop webcam texture injection
+    window._webcamTexture    = null;
+    window._webcamUpdateDye  = null;
     releaseAllFingers();
     overlayCtx.clearRect(0, 0, 640, 480);
   }
 
+  // ─── WebGL webcam texture ────────────────────────────────────────────────────
+  function initWebcamTexture () {
+    const gl = window._fluidGL;
+    if (!gl) return;
+
+    if (!webcamTex) {
+      webcamTex = gl.createTexture();
+      gl.bindTexture(gl.TEXTURE_2D, webcamTex);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    }
+    window._webcamTexture = webcamTex;
+  }
+
+  function uploadWebcamTexture () {
+    if (!cameraActive || !webcamTex || videoEl.readyState < 2) return;
+    const gl = window._fluidGL;
+    if (!gl) return;
+    gl.bindTexture(gl.TEXTURE_2D, webcamTex);
+    // Upload raw video frame — browser handles YUV→RGB
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGB, gl.RGB, gl.UNSIGNED_BYTE, videoEl);
+  }
+
+  // ─── Pixel color sampling from webcam ───────────────────────────────────────
+  // Returns { r, g, b } in fluid color range (0..~0.3) for the given
+  // normalised position (fx, fy) in the webcam image.
+  function sampleWebcamColor (fx, fy) {
+    if (!cameraActive || videoEl.readyState < 2) return null;
+    try {
+      // Draw a tiny region around the fingertip for a stable color
+      const sw = sampleCanvas.width;
+      const sh = sampleCanvas.height;
+      sampleCtx.drawImage(videoEl, 0, 0, sw, sh);
+      // fx is already mirrored (1-tip.x), so sample at fx directly
+      const px = Math.round(fx * sw);
+      const py = Math.round(fy * sh);
+      const cx = Math.max(0, Math.min(sw - 1, px));
+      const cy = Math.max(0, Math.min(sh - 1, py));
+      const d  = sampleCtx.getImageData(cx, cy, 1, 1).data;
+      // Scale to fluid intensity (0-255 → ~0-0.35, boosted for visibility)
+      return {
+        r: (d[0] / 255) * 0.35,
+        g: (d[1] / 255) * 0.35,
+        b: (d[2] / 255) * 0.35,
+      };
+    } catch (_) {
+      return null;
+    }
+  }
+
   // ─── MediaPipe init ──────────────────────────────────────────────────────────
   async function initMediaPipe () {
-    // Load scripts sequentially if not present
     if (typeof window.Hands === 'undefined') {
       await loadScript('https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js');
     }
@@ -127,36 +199,30 @@
     });
     handsModel.onResults(onHandResults);
 
-    // MediaPipe Camera util drives the frame loop
     mpCamera = new window.Camera(videoEl, {
       onFrame: async () => {
-        if (cameraActive && handsModel) {
-          await handsModel.send({ image: videoEl });
-        }
+        if (cameraActive && handsModel) await handsModel.send({ image: videoEl });
       },
       width: 640, height: 480,
     });
     mpCamera.start();
-    console.log('[HandFluid] MediaPipe started');
+    console.log('[HandFluid] MediaPipe + webcam texture started');
   }
 
   function loadScript (src) {
     return new Promise((resolve, reject) => {
-      // Avoid double-loading
       if (document.querySelector(`script[src="${src}"]`)) { resolve(); return; }
-      const s    = document.createElement('script');
-      s.src      = src;
-      s.onload   = resolve;
-      s.onerror  = () => reject(new Error('Failed to load: ' + src));
+      const s  = document.createElement('script');
+      s.src    = src;
+      s.onload = resolve;
+      s.onerror = () => reject(new Error('Failed to load: ' + src));
       document.head.appendChild(s);
     });
   }
 
-  // ─── Per-frame results ───────────────────────────────────────────────────────
+  // ─── Per-frame hand results ──────────────────────────────────────────────────
   function onHandResults (results) {
     overlayCtx.clearRect(0, 0, 640, 480);
-
-    // Collect which keys are seen this frame
     const seenKeys = new Set();
 
     if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
@@ -165,60 +231,55 @@
         drawSkeleton(landmarks);
 
         extended.forEach(fingerIdx => {
-          const key  = `${handIdx}_${fingerIdx}`;
-          const tip  = landmarks[FINGER_TIPS[fingerIdx]];
-          // Flip X so left/right matches the mirrored preview
-          const fx = 1.0 - tip.x;
-          const fy = tip.y;
+          const key = `${handIdx}_${fingerIdx}`;
+          const tip = landmarks[FINGER_TIPS[fingerIdx]];
+          const fx  = 1.0 - tip.x;   // mirror to match display
+          const fy  = tip.y;
 
           seenKeys.add(key);
           drawFingertipDot(tip, fingerIdx);
 
+          // Sample real color from webcam at fingertip position
+          const camColor = sampleWebcamColor(fx, fy);
+
           if (!fingerState[key]) {
-            // First frame for this finger — register it
             fingerState[key] = {
-              id:      PTR_ID_BASE + handIdx * 5 + fingerIdx,
-              x:  fx, y:  fy,
+              id:    PTR_ID_BASE + handIdx * 5 + fingerIdx,
+              x: fx, y: fy,
               prevX: fx, prevY: fy,
               active: true,
-              fresh:  true,          // will call pointerDown this tick
-              color:  FLUID_COLORS[fingerIdx % 5],
+              fresh:  true,
+              color:  camColor || FLUID_COLORS[fingerIdx % 5],
             };
           } else {
-            const s  = fingerState[key];
-            s.prevX  = s.x;
-            s.prevY  = s.y;
-            s.x      = s.x * SMOOTHING + fx * (1 - SMOOTHING);
-            s.y      = s.y * SMOOTHING + fy * (1 - SMOOTHING);
+            const s = fingerState[key];
+            s.prevX = s.x;
+            s.prevY = s.y;
+            s.x     = s.x * SMOOTHING + fx * (1 - SMOOTHING);
+            s.y     = s.y * SMOOTHING + fy * (1 - SMOOTHING);
             s.active = true;
             s.fresh  = false;
+            // Refresh color from live pixels each frame
+            if (camColor) s.color = camColor;
           }
         });
       });
     }
 
-    // Release any finger not seen this frame
     Object.keys(fingerState).forEach(key => {
-      if (!seenKeys.has(key)) {
-        releaseFingerKey(key);
-      }
+      if (!seenKeys.has(key)) releaseFingerKey(key);
     });
 
-    // Apply to fluid engine every frame
     injectIntoFluid();
   }
 
   // ─── Finger extension detection ──────────────────────────────────────────────
   function getExtendedFingers (lm) {
     const extended = [];
-    // Thumb: tip x far from wrist x
     if (Math.abs(lm[4].x - lm[0].x) > 0.07) extended.push(0);
-    // Other 4 fingers: tip y clearly above PIP joint (image y flipped)
-    const pipJoints = [6, 10, 14, 18];
+    const pip = [6, 10, 14, 18];
     for (let i = 1; i <= 4; i++) {
-      if (lm[FINGER_TIPS[i]].y < lm[pipJoints[i - 1]].y - 0.025) {
-        extended.push(i);
-      }
+      if (lm[FINGER_TIPS[i]].y < lm[pip[i - 1]].y - 0.025) extended.push(i);
     }
     return extended;
   }
@@ -231,26 +292,22 @@
 
     Object.values(fingerState).forEach(fs => {
       if (!fs.active) return;
-
       const posX = fs.x * fc.width;
       const posY = fs.y * fc.height;
-      let   ptr  = pts.find(p => p.id === fs.id);
+      let ptr = pts.find(p => p.id === fs.id);
 
       if (fs.fresh) {
-        // New finger — allocate pointer and call Down
-        if (!ptr) {
-          ptr = new window.pointerPrototype();
-          pts.push(ptr);
-        }
+        if (!ptr) { ptr = new window.pointerPrototype(); pts.push(ptr); }
         window.updatePointerDownData(ptr, fs.id, posX, posY);
         ptr.color = fs.color;
       } else {
-        // Continuing finger — only emit Move if it actually moved
         if (!ptr) return;
         const dx = Math.abs(fs.x - fs.prevX);
         const dy = Math.abs(fs.y - fs.prevY);
         if (dx > MIN_MOVE || dy > MIN_MOVE) {
           window.updatePointerMoveData(ptr, posX, posY);
+          // Update color to latest webcam sample while moving
+          ptr.color = fs.color;
         }
       }
     });
@@ -268,9 +325,9 @@
     Object.keys(fingerState).forEach(releaseFingerKey);
   }
 
-  // ─── Drawing ─────────────────────────────────────────────────────────────────
+  // ─── Drawing helpers ─────────────────────────────────────────────────────────
   const OVERLAY_COLORS = ['#FF6B6B', '#FFD93D', '#6BCB77', '#4D96FF', '#C77DFF'];
-  const FLUID_COLORS   = [
+  const FLUID_COLORS   = [   // fallback when webcam unavailable
     { r: 0.30, g: 0.04, b: 0.04 },
     { r: 0.28, g: 0.28, b: 0.02 },
     { r: 0.02, g: 0.30, b: 0.06 },
@@ -290,7 +347,7 @@
   function drawSkeleton (lm) {
     const ctx = overlayCtx, W = 640, H = 480;
     ctx.save();
-    ctx.strokeStyle = 'rgba(255,255,255,0.45)';
+    ctx.strokeStyle = 'rgba(255,255,255,0.5)';
     ctx.lineWidth   = 1.5;
     CONNECTIONS.forEach(([a, b]) => {
       ctx.beginPath();
@@ -301,7 +358,7 @@
     lm.forEach(p => {
       ctx.beginPath();
       ctx.arc((1 - p.x) * W, p.y * H, 2.5, 0, Math.PI * 2);
-      ctx.fillStyle = 'rgba(255,255,255,0.7)';
+      ctx.fillStyle = 'rgba(255,255,255,0.75)';
       ctx.fill();
     });
     ctx.restore();
@@ -314,14 +371,12 @@
     const y     = lm.y * H;
     const color = OVERLAY_COLORS[fingerIdx % 5];
     ctx.save();
-    // Glow ring
     ctx.beginPath();
     ctx.arc(x, y, 11, 0, Math.PI * 2);
     ctx.strokeStyle = color;
     ctx.lineWidth   = 2.5;
     ctx.globalAlpha = 0.85;
     ctx.stroke();
-    // Core dot
     ctx.beginPath();
     ctx.arc(x, y, 5, 0, Math.PI * 2);
     ctx.fillStyle   = color;

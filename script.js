@@ -561,6 +561,8 @@ const displayShaderSource = `
     uniform sampler2D uDithering;
     uniform vec2 ditherScale;
     uniform vec2 texelSize;
+    uniform sampler2D uWebcam;
+    uniform float uWebcamMix;
 
     vec3 linearToGamma (vec3 color) {
         color = max(color, vec3(0));
@@ -605,6 +607,17 @@ const displayShaderSource = `
         bloom = linearToGamma(bloom);
         c += bloom;
     #endif
+
+        // ── webcam background: mirror x for selfie view ──────────────────
+        if (uWebcamMix > 0.0) {
+            vec2 camUv = vec2(1.0 - vUv.x, vUv.y);
+            vec3 cam = texture2D(uWebcam, camUv).rgb;
+            // fluid brightness drives blend: bright fluid = fluid color, dark = webcam
+            float fluidLum = dot(c, vec3(0.299, 0.587, 0.114));
+            float blend = clamp(fluidLum * 6.0, 0.0, 1.0);
+            c = mix(cam, c + cam * 0.15, blend) * uWebcamMix
+              + c * (1.0 - uWebcamMix);
+        }
 
         float a = max(c.r, max(c.g, c.b));
         gl_FragColor = vec4(c, a);
@@ -1181,6 +1194,8 @@ function update () {
     applyInputs();
     if (!config.PAUSED)
         step(dt);
+    // ── webcam dye injection hook ──
+    if (window._webcamUpdateDye) window._webcamUpdateDye();
     render(null);
     requestAnimationFrame(update);
 }
@@ -1344,6 +1359,16 @@ function drawDisplay (target) {
     }
     if (config.SUNRAYS)
         gl.uniform1i(displayMaterial.uniforms.uSunrays, sunrays.attach(3));
+    // ── webcam background ──
+    if (window._webcamTexture) {
+        const slot = 4;
+        gl.activeTexture(gl.TEXTURE0 + slot);
+        gl.bindTexture(gl.TEXTURE_2D, window._webcamTexture);
+        gl.uniform1i(displayMaterial.uniforms.uWebcam, slot);
+        gl.uniform1f(displayMaterial.uniforms.uWebcamMix, 1.0);
+    } else {
+        gl.uniform1f(displayMaterial.uniforms.uWebcamMix, 0.0);
+    }
     blit(target);
 }
 
@@ -1557,6 +1582,12 @@ window.updatePointerUpData   = updatePointerUpData;
 window.pointerPrototype      = pointerPrototype;
 window.pointers              = pointers;
 window.fluidCanvas           = canvas;
+window._fluidGL              = gl;
+window._fluidDye             = () => dye;
+window._fluidBlit            = blit;
+window._fluidSplatProgram    = () => splatProgram;
+window._fluidVelocity        = () => velocity;
+window._fluidCorrectRadius   = correctRadius;
 
 function correctDeltaX (delta) {
     let aspectRatio = canvas.width / canvas.height;
