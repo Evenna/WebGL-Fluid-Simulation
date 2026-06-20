@@ -10,7 +10,7 @@
   const SMOOTHING    = 0.45;
   const MIN_MOVE     = 0.002;
   const PTR_ID_BASE  = 100;
-  const COLOR_BOOST  = 2.5;    // webcam pixel → fluid color multiplier
+  const COLOR_BOOST  = 1.2;    // webcam pixel → fluid color multiplier
 
   // ─── State ───────────────────────────────────────────────────────────────────
   const fingerState = {};
@@ -162,15 +162,15 @@
       const lum = 0.299 * r + 0.587 * g + 0.114 * b;
       let fr, fg, fb;
       if (lum > 0.5) {
-        // 亮背景 → 用暗色调（颜色值低，对比清晰）
-        fr = r * 0.8;
-        fg = g * 0.8;
-        fb = b * 0.8;
+        // 亮背景 → 极暗，避免曝光
+        fr = r * 0.25;
+        fg = g * 0.25;
+        fb = b * 0.25;
       } else {
-        // 暗背景 → 用亮色调（颜色值高，发光感）
-        fr = Math.max(r, 0.15) * COLOR_BOOST;
-        fg = Math.max(g, 0.15) * COLOR_BOOST;
-        fb = Math.max(b, 0.15) * COLOR_BOOST;
+        // 暗背景 → 适当亮，有流体感
+        fr = Math.max(r, 0.08) * COLOR_BOOST;
+        fg = Math.max(g, 0.08) * COLOR_BOOST;
+        fb = Math.max(b, 0.08) * COLOR_BOOST;
       }
       return { r: fr, g: fg, b: fb };
     } catch (_) { return null; }
@@ -335,11 +335,11 @@
   // ─── Drawing ── v1 原版 ──────────────────────────────────────────────────────
   const OVERLAY_COLORS = ['#FF6B6B', '#FFD93D', '#6BCB77', '#4D96FF', '#C77DFF'];
   const FLUID_COLORS   = [
-    { r: 0.9, g: 0.15, b: 0.15 },
-    { r: 0.85, g: 0.75, b: 0.05 },
-    { r: 0.05, g: 0.9, b: 0.25 },
-    { r: 0.05, g: 0.35, b: 1.0 },
-    { r: 0.75, g: 0.05, b: 1.0 },
+    { r: 0.28, g: 0.04, b: 0.04 },
+    { r: 0.26, g: 0.22, b: 0.02 },
+    { r: 0.02, g: 0.28, b: 0.08 },
+    { r: 0.02, g: 0.08, b: 0.30 },
+    { r: 0.22, g: 0.02, b: 0.30 },
   ];
 
   const CONNECTIONS = [
