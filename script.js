@@ -1550,6 +1550,14 @@ function updatePointerUpData (pointer) {
     pointer.down = false;
 }
 
+// ── Expose internals for hand-fluid.js ──────────────────────────────────────
+window.updatePointerDownData = updatePointerDownData;
+window.updatePointerMoveData = updatePointerMoveData;
+window.updatePointerUpData   = updatePointerUpData;
+window.pointerPrototype      = pointerPrototype;
+window.pointers              = pointers;
+window.fluidCanvas           = canvas;
+
 function correctDeltaX (delta) {
     let aspectRatio = canvas.width / canvas.height;
     if (aspectRatio < 1) delta *= aspectRatio;
